@@ -44,12 +44,17 @@ function actionButton(label, onClick, t) {
 }
 
 export default class NativeNotifications extends View {
-  init(_props, _cx) {
+  init(_props, cx) {
     this.enabled = localStorage.getItem("enabled") === "true";
     this.note = "macOS sender: Herdr App Notifier.";
-    this.previous = new Map(agents().map((agent) => [agent.address, agent.status]));
+    this.previous = new Map(agents().map((agent) => [agent.address, {
+      status: agent.status,
+      focused: agent.focused,
+      pending: null,
+    }]));
     this.queue = [];
     this.sending = false;
+    cx.timer.every(1000, (cx) => this.scanAgents(cx));
   }
 
   setEnabled(enabled) {
@@ -146,11 +151,15 @@ export default class NativeNotifications extends View {
     });
   }
 
-  render(cx) {
-    const t = theme();
+  scanAgents(cx) {
     const snapshot = collectTransitions(this.previous, agents(), this.enabled);
     this.previous = snapshot.next;
     this.enqueue(snapshot.events, cx);
+  }
+
+  render(cx) {
+    const t = theme();
+    this.scanAgents(cx);
 
     return v_flex()
       .size_full()

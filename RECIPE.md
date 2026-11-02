@@ -8,7 +8,7 @@ A setup panel with enable/test controls and current local state. After setup, **
 
 ## How it behaves
 
-The mod observes Herdr App's reactive `agents()` data; it does not poll. It sends one notification for a background transition to `done` or `blocked`, suppresses the currently focused agent, and silently seeds agents already present when the mod starts. The enable setting is stored per mod copy in local storage.
+The mod observes Herdr App's reactive `agents()` data and scans its in-memory snapshot once per second so a hidden copy keeps monitoring. It sends one notification for a transition to `done` or `blocked`, silently seeds agents already present when the mod starts, and defers a focused agent's alert until it leaves focus. If it returns to `idle` first, no alert is sent. The enable setting is stored per mod copy in local storage.
 
 ## Built from
 

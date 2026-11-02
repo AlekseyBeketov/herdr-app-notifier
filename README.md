@@ -35,9 +35,9 @@ After setup, click **Hide panel (keep notifications)**. This hides the UI while 
 - A background agent changes to **done**.
 - A background agent changes to **blocked** and needs input.
 - Agents already in those states when the mod loads are seeded silently; installation does not replay old alerts.
-- The currently focused agent is suppressed.
+- If a focused agent finishes or becomes blocked, its alert is deferred until you leave it; if it returns to `idle` first, no alert is sent.
 
-Alerts include the agent app and Herdr space name, not terminal output, prompts, source files, or conversation history. The mod does not poll, make network requests, or collect telemetry. Alerts are silent by default because Herdr App already plays its own sounds.
+Alerts include the agent app and Herdr space name, not terminal output, prompts, source files, or conversation history. A lightweight in-memory status scan runs once per second so monitoring continues when the block is hidden; it makes no network requests and collects no telemetry. Alerts are silent by default because Herdr App already plays its own sounds.
 
 The helper uses Apple's legacy `NSUserNotificationCenter` API. Apple deprecated it in macOS 11. On the tested macOS 27 machine, the newer `UserNotifications` API rejected an ad-hoc-signed helper during client validation; using that route would require a properly signed helper and a signing identity. The legacy API is used here so contributors can build locally without a signing certificate. A future macOS release may remove it; a durable first-party solution would be for Herdr App to expose native notifications itself.
 
