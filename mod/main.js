@@ -159,7 +159,6 @@ export default class NativeNotifications extends View {
 
   render(cx) {
     const t = theme();
-    this.scanAgents(cx);
 
     return v_flex()
       .size_full()
