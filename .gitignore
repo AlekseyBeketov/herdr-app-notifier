@@ -1,0 +1,18 @@
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Generated Herdr editor files
+/mod/gpui-kit.d.ts
+/mod/jsconfig.json
+
+# Native helper build products
+/build/
+*.app/
+*.dSYM/
+
+# Local test artifacts
+*.log
+*.tmp
+coverage/
