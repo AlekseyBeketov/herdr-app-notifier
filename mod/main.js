@@ -1,13 +1,54 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { agents, appHome, closeOverlay, exec, layout, props, run, theme } from "herdr";
+import { agents, appHome, closeOverlay, exec, layout, props, run, theme, window as appWindow } from "herdr";
 import { collectTransitions, notificationText } from "./transitions.js";
 
 const MOD_ID = "herdr-app-notifier";
 const HELPER_RELATIVE = `/mods/${MOD_ID}/HerdrNotifier.app/Contents/MacOS/HerdrNotifier`;
+const LOGGER_PATH = "/usr/bin/logger";
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
+let diagnosticWrites = Promise.resolve();
+
+function logDiagnostic(event, fields = {}) {
+  const message = JSON.stringify({
+    component: MOD_ID,
+    ...fields,
+    timestamp: new Date().toISOString(),
+    event,
+  });
+
+  diagnosticWrites = diagnosticWrites
+    .then(async () => {
+      const result = await exec(LOGGER_PATH, ["-t", MOD_ID, message]);
+      if (result.code !== 0) {
+        throw new Error(result.stderr.trim() || `logger exited with code ${result.code}`);
+      }
+    })
+    .catch((error) => {
+      console.error(`[${MOD_ID}] diagnostic log failed: ${String(error)}`);
+    });
+  return diagnosticWrites;
+}
+
+function diagnosticError(error, sensitiveValues = []) {
+  let summary = String(error);
+  for (const value of sensitiveValues) {
+    if (typeof value === "string" && value.length > 0) {
+      summary = summary.replaceAll(value, "[redacted]");
+    }
+  }
+  return summary.slice(0, 300);
+}
 
 function helperPath() {
   return `${appHome()}${HELPER_RELATIVE}`;
+}
+
+function herdrWindowIsActive() {
+  // herdr.window() is published by the app's poll/render pass. Read GPUI's
+  // native focus in this task instead, so a blur cannot suppress a completion.
+  return globalThis.window.is_window_active();
 }
 
 function findNotifierBlocks(node, ids = []) {
@@ -50,16 +91,29 @@ export default class NativeNotifications extends View {
     this.previous = new Map(agents().map((agent) => [agent.address, {
       status: agent.status,
       focused: agent.focused,
+      seq: agent.seq,
       pending: null,
     }]));
     this.queue = [];
     this.sending = false;
+    this.lastScanAt = Date.now();
+    this.lastHeartbeatAt = this.lastScanAt;
+    this.maxScanGapMs = 0;
+    this.scansSinceHeartbeat = 0;
+    logDiagnostic("monitor_started", {
+      enabled: this.enabled,
+      windowActive: herdrWindowIsActive(),
+      initialAgentCount: this.previous.size,
+      pollIntervalMs: 1000,
+    });
     cx.timer.every(1000, (cx) => this.scanAgents(cx));
   }
 
   setEnabled(enabled) {
+    const changed = this.enabled !== enabled;
     this.enabled = enabled;
     localStorage.setItem("enabled", String(enabled));
+    if (changed) logDiagnostic("enabled_changed", { enabled });
   }
 
   enableAndTest(cx) {
@@ -127,20 +181,57 @@ export default class NativeNotifications extends View {
       try {
         while (this.queue.length > 0) {
           const event = this.queue.shift();
-          if (!this.enabled) continue;
+          const app = event.agent.app || event.agent.program?.name || null;
+          if (!this.enabled) {
+            await logDiagnostic("notification_skipped", {
+              address: event.address,
+              app,
+              notificationStatus: event.status,
+              reason: "disabled_before_dispatch",
+            });
+            continue;
+          }
 
           const message = notificationText(event.agent, event.status);
+          const identifier = `${event.address}-${event.status}-${Date.now()}`;
+          const startedAt = Date.now();
+          await logDiagnostic("notification_helper_start", {
+            address: event.address,
+            app,
+            observedStatus: event.agent.status,
+            notificationStatus: event.status,
+            identifier,
+          });
           try {
             const result = await submitNotification(
               "--notify",
               message.title,
               message.body,
-              `${event.address}-${event.status}-${Date.now()}`,
+              identifier,
             );
+            await logDiagnostic("notification_helper_exit", {
+              address: event.address,
+              app,
+              notificationStatus: event.status,
+              identifier,
+              exitCode: result.code,
+              durationMs: Date.now() - startedAt,
+              ...(result.code === 0
+                ? {}
+                : { stderr: diagnosticError(result.stderr, [message.title, message.body]) }),
+            });
             if (result.code !== 0) {
               this.note = result.stderr.trim() || "The native helper could not submit a notification.";
             }
           } catch (error) {
+            await logDiagnostic("notification_helper_error", {
+              address: event.address,
+              app,
+              notificationStatus: event.status,
+              identifier,
+              durationMs: Date.now() - startedAt,
+              error: diagnosticError(error, [message.title, message.body]),
+            });
             this.note = `Could not start the native helper: ${String(error)}`;
           }
         }
@@ -152,9 +243,47 @@ export default class NativeNotifications extends View {
   }
 
   scanAgents(cx) {
-    const snapshot = collectTransitions(this.previous, agents(), this.enabled);
+    const scanAt = Date.now();
+    const scanGapMs = scanAt - this.lastScanAt;
+    this.lastScanAt = scanAt;
+    this.maxScanGapMs = Math.max(this.maxScanGapMs, scanGapMs);
+    this.scansSinceHeartbeat += 1;
+    const currentAgents = agents();
+    const windowActive = herdrWindowIsActive();
+    const snapshot = collectTransitions(this.previous, currentAgents, this.enabled, windowActive);
+    const agentsByAddress = new Map(currentAgents.map((agent) => [agent.address, agent]));
+
+    for (const trace of snapshot.traces) {
+      const agent = agentsByAddress.get(trace.address);
+      logDiagnostic(
+        trace.action === "first_seen_seeded" ? "agent_first_seen" : "agent_transition_decision",
+        {
+          ...trace,
+          seq: agent?.seq ?? null,
+          previousSeq: this.previous.get(trace.address)?.seq ?? null,
+          scanGapMs,
+          app: agent?.app || agent?.program?.name || null,
+        },
+      );
+    }
+
     this.previous = snapshot.next;
     this.enqueue(snapshot.events, cx);
+
+    const now = Date.now();
+    if (now - this.lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
+      this.lastHeartbeatAt = now;
+      logDiagnostic("monitor_heartbeat", {
+        enabled: this.enabled,
+        windowActive,
+        snapshotWindowActive: appWindow()?.active === true,
+        agentCount: currentAgents.length,
+        scansSinceHeartbeat: this.scansSinceHeartbeat,
+        maxScanGapMs: this.maxScanGapMs,
+      });
+      this.scansSinceHeartbeat = 0;
+      this.maxScanGapMs = 0;
+    }
   }
 
   render(cx) {

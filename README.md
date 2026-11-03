@@ -24,7 +24,7 @@ Herdr docks new mods according to `mod/mod.json`. If the panel is not visible in
 herdr-app do mod.open --name herdr-app-notifier
 ```
 
-In the panel, select **Enable and test**. On first use, allow **Herdr App Notifier** to send notifications. Choose Banners or Alerts in **System Settings → Notifications → Herdr App Notifier**. If macOS previously denied permission, enable it there manually.
+In the panel, select **Enable and test**. On first use, allow **Herdr App Notifier** to send notifications. In **System Settings → Notifications → Herdr App Notifier**, choose **Persistent** (or **Alerts** on older macOS) if you do not want the alert to disappear before you notice it; temporary banners auto-dismiss. On macOS 27, also choose **Desktop** as the notification location. If macOS previously denied permission, enable it there manually.
 
 The native helper uses the bundle ID `dev.alekseybeketov.herdr-app-notifier.native` to avoid stale macOS sender-icon records. macOS may therefore treat an upgrade from the previous helper identity as a new sender and ask for notification permission again; allow the new **Herdr App Notifier** entry. The old entry may remain in Notification Settings.
 
@@ -33,11 +33,12 @@ After setup, click **Hide panel (keep notifications)**. This hides the UI while 
 ## What it notifies about
 
 - A background agent changes to **done**.
+- A background Pi agent changes from `working` to `idle`. Herdr's Pi bridge reports `idle` when a run settles instead of `done`; this fallback can also notify after an interrupted Pi run.
 - A background agent changes to **blocked** and needs input.
 - Agents already in those states when the mod loads are seeded silently; installation does not replay old alerts.
-- If a focused agent finishes or becomes blocked, its alert is deferred until you leave it; if it returns to `idle` first, no alert is sent.
+- If an agent is focused while the Herdr window is active, its alert is deferred; if the window becomes inactive while the result is still pending, the alert is sent. If the agent returns to `idle` first, no alert is sent.
 
-Alerts include the agent app and Herdr space name, not terminal output, prompts, source files, or conversation history. A lightweight in-memory status scan runs once per second so monitoring continues when the block is hidden; it makes no network requests and collects no telemetry. Alerts are silent by default because Herdr App already plays its own sounds.
+Alerts include the agent app and Herdr space name, not terminal output, prompts, source files, or conversation history. A lightweight in-memory status scan runs once per second so monitoring continues when the block is hidden; it makes no network requests. Focus decisions read GPUI's native `globalThis.window.is_window_active()` at scan time. Herdr's separate `window().active` snapshot follows its app polling cycle and can still describe the previous focus state. For this diagnostic branch, status-transition and helper-result metadata is written to the local macOS Unified Log; notification text, prompts, terminal output, and conversation history are not logged. Alerts are silent by default because Herdr App already plays its own sounds.
 
 The helper uses Apple's legacy `NSUserNotificationCenter` API. Apple deprecated it in macOS 11. On the tested macOS 27 machine, the newer `UserNotifications` API rejected an ad-hoc-signed helper during client validation; using that route would require a properly signed helper and a signing identity. The legacy API is used here so contributors can build locally without a signing certificate. A future macOS release may remove it; a durable first-party solution would be for Herdr App to expose native notifications itself.
 
@@ -50,6 +51,16 @@ herdr-app check ./mod
 ```
 
 Tests use Node's built-in test runner. Build and notification permission/presentation must also be tested interactively on macOS.
+
+## Diagnostics
+
+This branch logs monitor startup/heartbeats, observed agent transitions, queue decisions, and native-helper exit results. To inspect the last hour:
+
+```bash
+log show --last 1h --style compact --predicate 'process == "logger" AND eventMessage CONTAINS[c] "herdr-app-notifier"'
+```
+
+Records include only agent address/app/status/focus, Herdr window active state, enabled state, and helper result metadata. They do not include notification titles or bodies.
 
 ## Uninstall
 
